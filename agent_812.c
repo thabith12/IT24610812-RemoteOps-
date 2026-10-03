@@ -8,6 +8,9 @@
 #define PORT 9461
 #define BUFFER_SIZE 1024
 
+#define AUTH_TOKEN "OPS-0812"
+#define SID "2180"
+
 int main() {
 
     int server_fd, client_fd;
@@ -16,7 +19,7 @@ int main() {
 
     char buffer[BUFFER_SIZE];
 
-    /* 1. Create socket */
+    /* 1. Create TCP socket */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_fd < 0) {
@@ -31,7 +34,7 @@ int main() {
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /* 3. Bind socket to port 9461 */
+    /* 3. Bind socket to port */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0) {
@@ -52,8 +55,10 @@ int main() {
     printf("RemoteOps Agent started.\n");
     printf("Listening on TCP port %d...\n", PORT);
 
-    /* 5. Accept client connections */
+    /* 5. Accept Controller connections */
     while (1) {
+
+        client_len = sizeof(client_addr);
 
         client_fd = accept(
             server_fd,
@@ -68,7 +73,9 @@ int main() {
 
         printf("Controller connected.\n");
 
-        /* 6. Receive data from client */
+        int authenticated = 0;
+
+        /* 6. Receive command */
         memset(buffer, 0, BUFFER_SIZE);
 
         int bytes_received = recv(
@@ -78,14 +85,26 @@ int main() {
             0
         );
 
-        if (bytes_received > 0) {
+        if (bytes_received <= 0) {
+            close(client_fd);
+            printf("Controller disconnected.\n");
+            continue;
+        }
 
-            buffer[bytes_received] = '\0';
+        buffer[bytes_received] = '\0';
 
-            printf("Received: %s\n", buffer);
+        /* Remove newline */
+        buffer[strcspn(buffer, "\r\n")] = '\0';
 
-            /* 7. Send simple response */
-            const char *response = "OK\n";
+        printf("Received: %s\n", buffer);
+
+        /* 7. Check AUTH command */
+        if (strcmp(buffer, "AUTH OPS-0812") == 0) {
+
+            authenticated = 1;
+
+            const char *response =
+                "OK AUTHENTICATED SID:2180\n";
 
             send(
                 client_fd,
@@ -93,15 +112,37 @@ int main() {
                 strlen(response),
                 0
             );
+
+            printf("Controller authenticated.\n");
+        }
+        else {
+
+            const char *response =
+                "ERR 001 AUTH_FAILED SID:2180\n";
+
+            send(
+                client_fd,
+                response,
+                strlen(response),
+                0
+            );
+
+            printf("Authentication failed.\n");
         }
 
-        /* 8. Close client connection */
+        /* 8. Show authentication state */
+        if (authenticated) {
+            printf("Authentication state: AUTHENTICATED\n");
+        } else {
+            printf("Authentication state: NOT AUTHENTICATED\n");
+        }
+
+        /* 9. Close connection for this basic authentication test */
         close(client_fd);
 
         printf("Controller disconnected.\n");
     }
 
-    /* This will normally never be reached */
     close(server_fd);
 
     return 0;
