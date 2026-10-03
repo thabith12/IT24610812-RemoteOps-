@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
+#include <dirent.h>
+#include <ctype.h>
 
 #define PORT 9461
 #define BUFFER_SIZE 4096
@@ -13,42 +15,192 @@
 #define SID "2180"
 
 
+/* Send a response with the personalized SID */
 void send_response(int client_fd, const char *message)
 {
     char response[BUFFER_SIZE];
 
-    snprintf(response, sizeof(response),
-             "%s SID:%s\n", message, SID);
+    snprintf(
+        response,
+        sizeof(response),
+        "%s SID:%s\n",
+        message,
+        SID
+    );
 
-    send(client_fd, response, strlen(response), 0);
+    send(
+        client_fd,
+        response,
+        strlen(response),
+        0
+    );
 }
 
 
+/* Handle SYSINFO command */
 void handle_sysinfo(int client_fd)
 {
     struct utsname system_info;
 
-    if (uname(&system_info) < 0) {
-        send_response(client_fd, "ERR 500 SYSINFO_FAILED");
+    if (uname(&system_info) < 0)
+    {
+        send_response(
+            client_fd,
+            "ERR 500 SYSINFO_FAILED"
+        );
+
         return;
     }
 
     char response[BUFFER_SIZE];
 
-    snprintf(response, sizeof(response),
-             "OK SYSINFO HOSTNAME:%s OS:%s KERNEL:%s ARCH:%s",
-             system_info.nodename,
-             system_info.sysname,
-             system_info.release,
-             system_info.machine);
+    snprintf(
+        response,
+        sizeof(response),
+        "OK SYSINFO HOSTNAME:%s OS:%s KERNEL:%s ARCH:%s",
+        system_info.nodename,
+        system_info.sysname,
+        system_info.release,
+        system_info.machine
+    );
 
-    send_response(client_fd, response);
+    send_response(
+        client_fd,
+        response
+    );
+}
+
+
+/* Handle LISTPROC command */
+void handle_listproc(int client_fd)
+{
+    DIR *proc_dir;
+    struct dirent *entry;
+
+    char response[BUFFER_SIZE];
+    int offset = 0;
+
+    /* Start the response */
+    offset += snprintf(
+        response + offset,
+        sizeof(response) - offset,
+        "OK LISTPROC"
+    );
+
+    /* Open Linux /proc filesystem */
+    proc_dir = opendir("/proc");
+
+    if (proc_dir == NULL)
+    {
+        send_response(
+            client_fd,
+            "ERR 500 LISTPROC_FAILED"
+        );
+
+        return;
+    }
+
+    /* Read entries inside /proc */
+    while ((entry = readdir(proc_dir)) != NULL)
+    {
+        int is_pid = 1;
+
+        /* Check whether directory name contains only digits */
+        for (int i = 0; entry->d_name[i] != '\0'; i++)
+        {
+            if (!isdigit((unsigned char)entry->d_name[i]))
+            {
+                is_pid = 0;
+                break;
+            }
+        }
+
+        /* Ignore non-PID entries */
+        if (!is_pid)
+        {
+            continue;
+        }
+
+        char comm_path[512];
+        char process_name[128];
+
+        /* Build /proc/<PID>/comm path */
+        snprintf(
+            comm_path,
+            sizeof(comm_path),
+            "/proc/%s/comm",
+            entry->d_name
+        );
+
+        /* Open process name file */
+        FILE *file = fopen(
+            comm_path,
+            "r"
+        );
+
+        if (file == NULL)
+        {
+            continue;
+        }
+
+        /* Read process name */
+        if (fgets(
+                process_name,
+                sizeof(process_name),
+                file
+            ) != NULL)
+        {
+            /* Remove newline */
+            process_name[
+                strcspn(process_name, "\r\n")
+            ] = '\0';
+
+            int written = snprintf(
+                response + offset,
+                sizeof(response) - offset,
+                " PID:%s NAME:%s",
+                entry->d_name,
+                process_name
+            );
+
+            /* Stop if buffer is full */
+            if (written < 0 ||
+                written >= (int)(sizeof(response) - offset))
+            {
+                fclose(file);
+                break;
+            }
+
+            offset += written;
+        }
+
+        fclose(file);
+    }
+
+    closedir(proc_dir);
+
+    /* Add SID and newline */
+    snprintf(
+        response + offset,
+        sizeof(response) - offset,
+        " SID:%s\n",
+        SID
+    );
+
+    /* Send complete response */
+    send(
+        client_fd,
+        response,
+        strlen(response),
+        0
+    );
 }
 
 
 int main()
 {
-    int server_fd, client_fd;
+    int server_fd;
+    int client_fd;
 
     struct sockaddr_in server_addr;
     struct sockaddr_in client_addr;
@@ -57,35 +209,55 @@ int main()
 
     char buffer[BUFFER_SIZE];
 
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (server_fd < 0) {
+    /* 1. Create TCP socket */
+    server_fd = socket(
+        AF_INET,
+        SOCK_STREAM,
+        0
+    );
+
+    if (server_fd < 0)
+    {
         perror("socket");
         return 1;
     }
 
 
-    memset(&server_addr, 0, sizeof(server_addr));
+    /* 2. Configure server address */
+    memset(
+        &server_addr,
+        0,
+        sizeof(server_addr)
+    );
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
 
-    if (bind(server_fd,
-             (struct sockaddr *)&server_addr,
-             sizeof(server_addr)) < 0) {
-
+    /* 3. Bind socket to port 9461 */
+    if (bind(
+            server_fd,
+            (struct sockaddr *)&server_addr,
+            sizeof(server_addr)
+        ) < 0)
+    {
         perror("bind");
+
         close(server_fd);
+
         return 1;
     }
 
 
-    if (listen(server_fd, 5) < 0) {
-
+    /* 4. Start listening */
+    if (listen(server_fd, 5) < 0)
+    {
         perror("listen");
+
         close(server_fd);
+
         return 1;
     }
 
@@ -94,6 +266,7 @@ int main()
     printf("Listening on TCP port %d...\n", PORT);
 
 
+    /* 5. Accept Controller connections */
     while (1)
     {
         client_len = sizeof(client_addr);
@@ -104,7 +277,8 @@ int main()
             &client_len
         );
 
-        if (client_fd < 0) {
+        if (client_fd < 0)
+        {
             perror("accept");
             continue;
         }
@@ -112,12 +286,20 @@ int main()
 
         printf("Controller connected.\n");
 
+
+        /* Authentication state */
         int authenticated = 0;
 
 
+        /* Handle multiple commands on same connection */
         while (1)
         {
-            memset(buffer, 0, sizeof(buffer));
+            memset(
+                buffer,
+                0,
+                sizeof(buffer)
+            );
+
 
             int bytes_received = recv(
                 client_fd,
@@ -127,22 +309,38 @@ int main()
             );
 
 
-            if (bytes_received <= 0) {
+            /* Controller disconnected */
+            if (bytes_received <= 0)
+            {
                 break;
             }
 
 
             buffer[bytes_received] = '\0';
 
-            buffer[strcspn(buffer, "\r\n")] = '\0';
 
-            printf("Received: %s\n", buffer);
+            /* Remove CR/LF */
+            buffer[
+                strcspn(buffer, "\r\n")
+            ] = '\0';
 
 
-            /* AUTH */
+            printf(
+                "Received: %s\n",
+                buffer
+            );
+
+
+            /* ================================= */
+            /* AUTH                              */
+            /* ================================= */
+
             if (strncmp(buffer, "AUTH ", 5) == 0)
             {
-                if (strcmp(buffer + 5, AUTH_TOKEN) == 0)
+                if (strcmp(
+                        buffer + 5,
+                        AUTH_TOKEN
+                    ) == 0)
                 {
                     authenticated = 1;
 
@@ -151,7 +349,9 @@ int main()
                         "OK AUTHENTICATED"
                     );
 
-                    printf("Controller authenticated.\n");
+                    printf(
+                        "Controller authenticated.\n"
+                    );
                 }
                 else
                 {
@@ -162,13 +362,21 @@ int main()
                         "ERR 001 AUTH_FAILED"
                     );
 
-                    printf("Authentication failed.\n");
+                    printf(
+                        "Authentication failed.\n"
+                    );
                 }
             }
 
 
-            /* SYSINFO */
-            else if (strcmp(buffer, "SYSINFO") == 0)
+            /* ================================= */
+            /* SYSINFO                           */
+            /* ================================= */
+
+            else if (strcmp(
+                        buffer,
+                        "SYSINFO"
+                    ) == 0)
             {
                 if (!authenticated)
                 {
@@ -179,13 +387,46 @@ int main()
                 }
                 else
                 {
-                    handle_sysinfo(client_fd);
+                    handle_sysinfo(
+                        client_fd
+                    );
                 }
             }
 
 
-            /* QUIT */
-            else if (strcmp(buffer, "QUIT") == 0)
+            /* ================================= */
+            /* LISTPROC                          */
+            /* ================================= */
+
+            else if (strcmp(
+                        buffer,
+                        "LISTPROC"
+                    ) == 0)
+            {
+                if (!authenticated)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 002 NOT_AUTHENTICATED"
+                    );
+                }
+                else
+                {
+                    handle_listproc(
+                        client_fd
+                    );
+                }
+            }
+
+
+            /* ================================= */
+            /* QUIT                              */
+            /* ================================= */
+
+            else if (strcmp(
+                        buffer,
+                        "QUIT"
+                    ) == 0)
             {
                 send_response(
                     client_fd,
@@ -196,7 +437,10 @@ int main()
             }
 
 
-            /* Unknown command */
+            /* ================================= */
+            /* UNKNOWN COMMAND                   */
+            /* ================================= */
+
             else
             {
                 send_response(
@@ -207,12 +451,16 @@ int main()
         }
 
 
+        /* Close Controller connection */
         close(client_fd);
 
-        printf("Controller disconnected.\n");
+        printf(
+            "Controller disconnected.\n"
+        );
     }
 
 
+    /* Close server socket */
     close(server_fd);
 
     return 0;
