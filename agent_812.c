@@ -7,6 +7,9 @@
 #include <sys/utsname.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <pthread.h>
+#include <sys/time.h>
+#include <netinet/in.h>
 
 #define PORT 9461
 #define BUFFER_SIZE 4096
@@ -15,6 +18,18 @@
 #define AUTH_TOKEN "OPS-0812"
 #define SID "2180"
 
+/* UDP Monitor configuration */
+#define MONITOR_UDP_PORT 9462
+#define MONITOR_INTERVAL 5
+
+volatile int monitor_running = 0;
+pthread_t monitor_thread;
+
+struct MonitorConfig
+{
+    struct sockaddr_in controller_addr;
+    int udp_socket;
+};
 
 /* Send a response with the personalized SID */
 void send_response(int client_fd, const char *message)
@@ -37,6 +52,195 @@ void send_response(int client_fd, const char *message)
     );
 }
 
+/* Get CPU usage percentage */
+double get_cpu_usage()
+{
+    FILE *file;
+    long user1, nice1, system1, idle1;
+    long user2, nice2, system2, idle2;
+    long total1, total2;
+    long idle_diff, total_diff;
+
+    file = fopen("/proc/stat", "r");
+
+    if (file == NULL)
+        return 0.0;
+
+    fscanf(
+        file,
+        "cpu %ld %ld %ld %ld",
+        &user1,
+        &nice1,
+        &system1,
+        &idle1
+    );
+
+    fclose(file);
+
+    sleep(1);
+
+    file = fopen("/proc/stat", "r");
+
+    if (file == NULL)
+        return 0.0;
+
+    fscanf(
+        file,
+        "cpu %ld %ld %ld %ld",
+        &user2,
+        &nice2,
+        &system2,
+        &idle2
+    );
+
+    fclose(file);
+
+    total1 =
+        user1 + nice1 + system1 + idle1;
+
+    total2 =
+        user2 + nice2 + system2 + idle2;
+
+    idle_diff =
+        idle2 - idle1;
+
+    total_diff =
+        total2 - total1;
+
+    if (total_diff == 0)
+        return 0.0;
+
+    return
+        100.0 *
+        (1.0 -
+        ((double)idle_diff /
+        (double)total_diff));
+}
+
+
+/* Get memory usage percentage */
+double get_memory_usage()
+{
+    FILE *file;
+
+    long total_memory = 0;
+    long available_memory = 0;
+
+    char line[256];
+
+    file = fopen(
+        "/proc/meminfo",
+        "r"
+    );
+
+    if (file == NULL)
+        return 0.0;
+
+    while (fgets(
+        line,
+        sizeof(line),
+        file))
+    {
+        if (sscanf(
+            line,
+            "MemTotal: %ld kB",
+            &total_memory) == 1)
+        {
+            continue;
+        }
+
+        if (sscanf(
+            line,
+            "MemAvailable: %ld kB",
+            &available_memory) == 1)
+        {
+            continue;
+        }
+    }
+
+    fclose(file);
+
+    if (total_memory == 0)
+        return 0.0;
+
+    return
+        100.0 *
+        ((double)(total_memory -
+                  available_memory) /
+         (double)total_memory);
+}
+
+
+/* Get system uptime */
+long get_uptime()
+{
+    FILE *file;
+
+    long uptime = 0;
+
+    file = fopen(
+        "/proc/uptime",
+        "r"
+    );
+
+    if (file == NULL)
+        return 0;
+
+    fscanf(
+        file,
+        "%ld",
+        &uptime
+    );
+
+    fclose(file);
+
+    return uptime;
+}
+
+
+/* UDP monitoring thread */
+void *monitor_function(void *arg)
+{
+    struct MonitorConfig *config =
+        (struct MonitorConfig *)arg;
+
+    char message[BUFFER_SIZE];
+
+    while (monitor_running)
+    {
+        double cpu =
+            get_cpu_usage();
+
+        double memory =
+            get_memory_usage();
+
+        long uptime =
+            get_uptime();
+
+        snprintf(
+            message,
+            sizeof(message),
+            "MONITOR CPU:%.2f MEM:%.2f UPTIME:%ld SID:%s",
+            cpu,
+            memory,
+            uptime,
+            SID
+        );
+
+        sendto(
+            config->udp_socket,
+            message,
+            strlen(message),
+            0,
+            (struct sockaddr *)&config->controller_addr,
+            sizeof(config->controller_addr)
+        );
+
+        sleep(MONITOR_INTERVAL);
+    }
+
+    return NULL;
+}
 
 /* Handle SYSINFO command */
 void handle_sysinfo(int client_fd)
@@ -805,7 +1009,143 @@ else if (strncmp(buffer, "GET ", 4) == 0)
             );
         }
     }
-} 
+}
+
+            /* ================================= */
+            /* MONITOR START / STOP              */
+            /* ================================= */
+
+            else if (strcmp(buffer, "MONITOR START") == 0)
+            {
+                if (!authenticated)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 002 NOT_AUTHENTICATED"
+                    );
+                }
+                else if (monitor_running)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 006 MONITOR_ALREADY_RUNNING"
+                    );
+                }
+                else
+                {
+                    struct MonitorConfig *config =
+                        malloc(sizeof(struct MonitorConfig));
+
+                    if (config == NULL)
+                    {
+                        send_response(
+                            client_fd,
+                            "ERR 500 MONITOR_MEMORY"
+                        );
+                    }
+                    else
+                    {
+                        config->udp_socket =
+                            socket(
+                                AF_INET,
+                                SOCK_DGRAM,
+                                0
+                            );
+
+                        if (config->udp_socket < 0)
+                        {
+                            free(config);
+
+                            send_response(
+                                client_fd,
+                                "ERR 500 UDP_SOCKET"
+                            );
+                        }
+                        else
+                        {
+                            memset(
+                                &config->controller_addr,
+                                0,
+                                sizeof(config->controller_addr)
+                            );
+
+                            config->controller_addr.sin_family =
+                                AF_INET;
+
+                            config->controller_addr.sin_port =
+                                htons(MONITOR_UDP_PORT);
+
+                            inet_pton(
+                                AF_INET,
+                                "127.0.0.1",
+                                &config->controller_addr.sin_addr
+                            );
+
+                            monitor_running = 1;
+
+                            if (pthread_create(
+                                    &monitor_thread,
+                                    NULL,
+                                    monitor_function,
+                                    config
+                                ) != 0)
+                            {
+                                monitor_running = 0;
+
+                                close(
+                                    config->udp_socket
+                                );
+
+                                free(config);
+
+                                send_response(
+                                    client_fd,
+                                    "ERR 500 MONITOR_THREAD"
+                                );
+                            }
+                            else
+                            {
+                                send_response(
+                                    client_fd,
+                                    "OK MONITOR_STARTED"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            else if (strcmp(buffer, "MONITOR STOP") == 0)
+            {
+                if (!authenticated)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 002 NOT_AUTHENTICATED"
+                    );
+                }
+                else if (!monitor_running)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 007 MONITOR_NOT_RUNNING"
+                    );
+                }
+                else
+                {
+                    monitor_running = 0;
+
+                    pthread_join(
+                        monitor_thread,
+                        NULL
+                    );
+
+                    send_response(
+                        client_fd,
+                        "OK MONITOR_STOPPED"
+                    );
+                }
+            } 
 
             /* ================================= */
             /* QUIT                              */

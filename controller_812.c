@@ -4,11 +4,16 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <sys/select.h>
 
 #define SERVER_IP "127.0.0.1"
 #define PORT 9461
 #define BUFFER_SIZE 4096
 #define AUTH_TOKEN "OPS-0812"
+#define AUTH_TOKEN "OPS-0812"
+#define MONITOR_UDP_PORT 9462
+
 
 int send_all(int sock_fd, const void *data, size_t length)
 {
@@ -30,6 +35,39 @@ int send_all(int sock_fd, const void *data, size_t length)
     }
 
     return 0;
+}
+
+void receive_monitor_packets(int udp_fd, int count)
+{
+    char buffer[BUFFER_SIZE];
+
+    struct sockaddr_in sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+
+    for (int i = 0; i < count; i++)
+    {
+        ssize_t bytes_received = recvfrom(
+            udp_fd,
+            buffer,
+            sizeof(buffer) - 1,
+            0,
+            (struct sockaddr *)&sender_addr,
+            &sender_len
+        );
+
+        if (bytes_received < 0)
+        {
+            perror("recvfrom");
+            return;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        printf(
+            "UDP Monitor: %s\n",
+            buffer
+        );
+    }
 }
 
 /* Receive one complete line */
@@ -269,6 +307,118 @@ int main()
         "Downloaded %ld bytes successfully.\n",
         file_size
     );
+
+    /* ================= MONITOR ================= */
+
+    int udp_fd;
+
+    struct sockaddr_in udp_addr;
+
+    udp_fd = socket(
+        AF_INET,
+        SOCK_DGRAM,
+        0
+    );
+
+    if (udp_fd < 0)
+    {
+        perror("UDP socket");
+        close(sock_fd);
+        return 1;
+    }
+
+    memset(
+        &udp_addr,
+        0,
+        sizeof(udp_addr)
+    );
+
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_addr.s_addr = INADDR_ANY;
+    udp_addr.sin_port = htons(MONITOR_UDP_PORT);
+
+    if (bind(
+            udp_fd,
+            (struct sockaddr *)&udp_addr,
+            sizeof(udp_addr)
+        ) < 0)
+    {
+        perror("UDP bind");
+        close(udp_fd);
+        close(sock_fd);
+        return 1;
+    }
+
+    /* Start monitoring */
+
+    const char *monitor_start =
+        "MONITOR START\n";
+
+    send_all(
+        sock_fd,
+        monitor_start,
+        strlen(monitor_start)
+    );
+
+    if (receive_line(
+            sock_fd,
+            buffer,
+            sizeof(buffer)) < 0)
+    {
+        printf("MONITOR START response failed.\n");
+
+        close(udp_fd);
+        close(sock_fd);
+
+        return 1;
+    }
+
+    printf(
+        "Agent: %s",
+        buffer
+    );
+
+    /* Receive 3 UDP monitoring reports */
+
+    printf(
+        "\nWaiting for UDP monitoring reports...\n"
+    );
+
+    receive_monitor_packets(
+        udp_fd,
+        3
+    );
+
+    /* Stop monitoring */
+
+    const char *monitor_stop =
+        "MONITOR STOP\n";
+
+    send_all(
+        sock_fd,
+        monitor_stop,
+        strlen(monitor_stop)
+    );
+
+    if (receive_line(
+            sock_fd,
+            buffer,
+            sizeof(buffer)) < 0)
+    {
+        printf("MONITOR STOP response failed.\n");
+
+        close(udp_fd);
+        close(sock_fd);
+
+        return 1;
+    }
+
+    printf(
+        "Agent: %s",
+        buffer
+    );
+
+    close(udp_fd);
 
     /* ================= QUIT ================= */
 
