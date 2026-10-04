@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
@@ -11,12 +12,14 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 
+
 #define PORT 9461
 #define BUFFER_SIZE 4096
 #define STORAGE_PATH "./agentfiles/IT24610812/"
 #define MAX_FILE_SIZE 10485760
 #define AUTH_TOKEN "OPS-0812"
 #define SID "2180"
+#define LOG_FILE "remoteops_812.log"
 
 /* UDP Monitor configuration */
 #define MONITOR_UDP_PORT 9462
@@ -51,6 +54,39 @@ void send_response(int client_fd, const char *message)
         0
     );
 }
+
+void write_log(const char *event)
+{
+    FILE *file;
+    time_t now;
+    struct tm *time_info;
+    char timestamp[64];
+
+    now = time(NULL);
+    time_info = localtime(&now);
+
+    strftime(
+        timestamp,
+        sizeof(timestamp),
+        "%Y-%m-%d %H:%M:%S",
+        time_info
+    );
+
+    file = fopen(LOG_FILE, "a");
+
+    if (file == NULL)
+        return;
+
+    fprintf(
+        file,
+        "[%s] %s\n",
+        timestamp,
+        event
+    );
+    fclose(file);
+}
+
+
 
 /* Get CPU usage percentage */
 double get_cpu_usage()
@@ -556,6 +592,10 @@ void handle_put(int client_fd, const char *filename, long file_size)
 
     fclose(file);
 
+char log_message[256];
+snprintf(log_message, sizeof(log_message), "PUT completed: %s (%ld bytes)", filename, file_size);
+write_log(log_message);
+
     send_response(client_fd, "OK PUT");
 }
 
@@ -695,6 +735,18 @@ void handle_get(int client_fd, const char *filename)
         total_sent += (long)bytes_read;
     }
 
+char log_message[256];
+
+    snprintf(
+        log_message,
+        sizeof(log_message),
+        "GET completed: %s (%ld bytes)",
+        filename,
+        file_size
+    );
+
+    write_log(log_message);
+
     fclose(file);
 }
 
@@ -787,6 +839,10 @@ int main()
 
         printf("Controller connected.\n");
 
+char log_message[256];
+snprintf(log_message, sizeof(log_message), "Controller connected from %s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+write_log(log_message);
+
 
         /* Authentication state */
         int authenticated = 0;
@@ -831,6 +887,9 @@ int main()
                 buffer
             );
 
+write_log("Command received:");
+write_log(buffer);
+
 
             /* ================================= */
             /* AUTH                              */
@@ -849,6 +908,8 @@ int main()
                         client_fd,
                         "OK AUTHENTICATED"
                     );
+write_log("Authentication successful");
+
 
                     printf(
                         "Controller authenticated.\n"
@@ -866,6 +927,7 @@ int main()
                     printf(
                         "Authentication failed.\n"
                     );
+write_log("Authentication failed");
                 }
             }
 
@@ -1109,6 +1171,7 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                                     client_fd,
                                     "OK MONITOR_STARTED"
                                 );
+                                write_log("MONITOR STARTED");
                             }
                         }
                     }
@@ -1144,6 +1207,7 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                         client_fd,
                         "OK MONITOR_STOPPED"
                     );
+                      write_log("MONITOR STOPPED");
                 }
             } 
 
@@ -1185,6 +1249,7 @@ else if (strncmp(buffer, "GET ", 4) == 0)
         printf(
             "Controller disconnected.\n"
         );
+write_log("Controller disconnected");
     }
 
 
