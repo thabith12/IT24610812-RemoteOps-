@@ -32,6 +32,12 @@ struct MonitorConfig
 {
     struct sockaddr_in controller_addr;
     int udp_socket;
+    volatile int running;
+};
+struct ClientArgs
+{
+    int client_fd;
+    struct sockaddr_in client_addr;
 };
 
 /* Send a response with the personalized SID */
@@ -242,7 +248,7 @@ void *monitor_function(void *arg)
 
     char message[BUFFER_SIZE];
 
-    while (monitor_running)
+    while (config->running)
     {
         double cpu =
             get_cpu_usage();
@@ -596,7 +602,7 @@ char log_message[256];
 snprintf(log_message, sizeof(log_message), "PUT completed: %s (%ld bytes)", filename, file_size);
 write_log(log_message);
 
-    send_response(client_fd, "OK PUT");
+    send_response(client_fd, "OK FILE_RECEIVED");
 }
 
 void handle_get(int client_fd, const char *filename)
@@ -667,11 +673,7 @@ void handle_get(int client_fd, const char *filename)
 
     rewind(file);
 
-    /*
-     * Send response line first.
-     * The controller will then receive exactly
-     * file_size raw bytes.
-     */
+    /* Send response line first. */
     char response[BUFFER_SIZE];
 
     snprintf(
@@ -750,103 +752,40 @@ char log_message[256];
     fclose(file);
 }
 
-int main()
+void *client_handler(void *arg)
 {
-    int server_fd;
-    int client_fd;
-
-    struct sockaddr_in server_addr;
-    struct sockaddr_in client_addr;
-
-    socklen_t client_len;
-
     char buffer[BUFFER_SIZE];
+    struct ClientArgs *client_info = (struct ClientArgs *)arg;
 
+    int client_fd = client_info->client_fd;
+    struct sockaddr_in client_addr = client_info->client_addr;
 
-    /* 1. Create TCP socket */
-    server_fd = socket(
-        AF_INET,
-        SOCK_STREAM,
-        0
+    free(client_info);
+
+  
+    printf("Controller connected.\n");
+
+    char log_message[256];
+
+    snprintf(
+        log_message,
+        sizeof(log_message),
+        "Controller connected from %s:%d",
+        inet_ntoa(client_addr.sin_addr),
+        ntohs(client_addr.sin_port)
     );
 
-    if (server_fd < 0)
-    {
-        perror("socket");
-        return 1;
-    }
-
-
-    /* 2. Configure server address */
-    memset(
-        &server_addr,
-        0,
-        sizeof(server_addr)
-    );
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
-
-
-    /* 3. Bind socket to port 9461 */
-    if (bind(
-            server_fd,
-            (struct sockaddr *)&server_addr,
-            sizeof(server_addr)
-        ) < 0)
-    {
-        perror("bind");
-
-        close(server_fd);
-
-        return 1;
-    }
-
-
-    /* 4. Start listening */
-    if (listen(server_fd, 5) < 0)
-    {
-        perror("listen");
-
-        close(server_fd);
-
-        return 1;
-    }
-
-
-    printf("RemoteOps Agent started.\n");
-    printf("Listening on TCP port %d...\n", PORT);
-
-
-    /* 5. Accept Controller connections */
-    while (1)
-    {
-        client_len = sizeof(client_addr);
-
-        client_fd = accept(
-            server_fd,
-            (struct sockaddr *)&client_addr,
-            &client_len
-        );
-
-        if (client_fd < 0)
-        {
-            perror("accept");
-            continue;
-        }
-
-
-        printf("Controller connected.\n");
-
-char log_message[256];
-snprintf(log_message, sizeof(log_message), "Controller connected from %s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-write_log(log_message);
-
+    write_log(log_message);
 
         /* Authentication state */
         int authenticated = 0;
 
+        /* Per-controller UDP monitoring session */
+        struct MonitorConfig monitor_config;
+        pthread_t monitor_thread;
+        int monitor_active = 0;
+
+        memset(&monitor_config, 0, sizeof(monitor_config));
 
         /* Handle multiple commands on same connection */
         while (1)
@@ -887,8 +826,7 @@ write_log(log_message);
                 buffer
             );
 
-write_log("Command received:");
-write_log(buffer);
+            write_log(buffer);
 
 
             /* ================================= */
@@ -908,8 +846,6 @@ write_log(buffer);
                         client_fd,
                         "OK AUTHENTICATED"
                     );
-write_log("Authentication successful");
-
 
                     printf(
                         "Controller authenticated.\n"
@@ -927,7 +863,6 @@ write_log("Authentication successful");
                     printf(
                         "Authentication failed.\n"
                     );
-write_log("Authentication failed");
                 }
             }
 
@@ -1029,6 +964,13 @@ else if (strncmp(buffer, "PUT ", 4) == 0)
                 "ERR 400 INVALID_FILE_SIZE"
             );
         }
+        else if (file_size > MAX_FILE_SIZE)
+        {
+            send_response(
+                client_fd,
+                "ERR 413 FILE_TOO_LARGE"
+            );
+        }
         else
         {
             handle_put(
@@ -1071,10 +1013,10 @@ else if (strncmp(buffer, "GET ", 4) == 0)
             );
         }
     }
-}
+} 
 
             /* ================================= */
-            /* MONITOR START / STOP              */
+            /* MONITOR START                      */
             /* ================================= */
 
             else if (strcmp(buffer, "MONITOR START") == 0)
@@ -1086,97 +1028,81 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                         "ERR 002 NOT_AUTHENTICATED"
                     );
                 }
-                else if (monitor_running)
+                else if (monitor_active)
                 {
                     send_response(
                         client_fd,
-                        "ERR 006 MONITOR_ALREADY_RUNNING"
+                        "ERR 409 MONITOR_ALREADY_RUNNING"
                     );
                 }
                 else
                 {
-                    struct MonitorConfig *config =
-                        malloc(sizeof(struct MonitorConfig));
+                    monitor_config.udp_socket =
+                        socket(AF_INET, SOCK_DGRAM, 0);
 
-                    if (config == NULL)
+                    if (monitor_config.udp_socket < 0)
                     {
                         send_response(
                             client_fd,
-                            "ERR 500 MONITOR_MEMORY"
+                            "ERR 500 UDP_SOCKET_FAILED"
                         );
                     }
                     else
                     {
-                        config->udp_socket =
-                            socket(
-                                AF_INET,
-                                SOCK_DGRAM,
-                                0
+                        memset(
+                            &monitor_config.controller_addr,
+                            0,
+                            sizeof(monitor_config.controller_addr)
+                        );
+
+                        monitor_config.controller_addr.sin_family =
+                            AF_INET;
+
+                        monitor_config.controller_addr.sin_addr =
+                            client_addr.sin_addr;
+
+                        monitor_config.controller_addr.sin_port =
+                            htons(MONITOR_UDP_PORT);
+
+                        monitor_config.running = 1;
+
+                        if (pthread_create(
+                                &monitor_thread,
+                                NULL,
+                                monitor_function,
+                                &monitor_config) != 0)
+                        {
+                            close(
+                                monitor_config.udp_socket
                             );
 
-                        if (config->udp_socket < 0)
-                        {
-                            free(config);
+                            monitor_config.running = 0;
 
                             send_response(
                                 client_fd,
-                                "ERR 500 UDP_SOCKET"
+                                "ERR 500 MONITOR_THREAD_FAILED"
                             );
                         }
                         else
                         {
-                            memset(
-                                &config->controller_addr,
-                                0,
-                                sizeof(config->controller_addr)
+                            monitor_active = 1;
+
+                            send_response(
+                                client_fd,
+                                "OK MONITOR_STARTED"
                             );
 
-                            config->controller_addr.sin_family =
-                                AF_INET;
-
-                            config->controller_addr.sin_port =
-                                htons(MONITOR_UDP_PORT);
-
-                            inet_pton(
-                                AF_INET,
-                                "127.0.0.1",
-                                &config->controller_addr.sin_addr
+                            write_log(
+                                "MONITOR STARTED"
                             );
-
-                            monitor_running = 1;
-
-                            if (pthread_create(
-                                    &monitor_thread,
-                                    NULL,
-                                    monitor_function,
-                                    config
-                                ) != 0)
-                            {
-                                monitor_running = 0;
-
-                                close(
-                                    config->udp_socket
-                                );
-
-                                free(config);
-
-                                send_response(
-                                    client_fd,
-                                    "ERR 500 MONITOR_THREAD"
-                                );
-                            }
-                            else
-                            {
-                                send_response(
-                                    client_fd,
-                                    "OK MONITOR_STARTED"
-                                );
-                                write_log("MONITOR STARTED");
-                            }
                         }
                     }
                 }
             }
+
+            /* ================================= */
+            /* MONITOR STOP                       */
+            /* ================================= */
 
             else if (strcmp(buffer, "MONITOR STOP") == 0)
             {
@@ -1187,29 +1113,38 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                         "ERR 002 NOT_AUTHENTICATED"
                     );
                 }
-                else if (!monitor_running)
+                else if (!monitor_active)
                 {
                     send_response(
                         client_fd,
-                        "ERR 007 MONITOR_NOT_RUNNING"
+                        "ERR 409 MONITOR_NOT_RUNNING"
                     );
                 }
                 else
                 {
-                    monitor_running = 0;
+                    monitor_config.running = 0;
 
                     pthread_join(
                         monitor_thread,
                         NULL
                     );
 
+                    close(
+                        monitor_config.udp_socket
+                    );
+
+                    monitor_active = 0;
+
                     send_response(
                         client_fd,
                         "OK MONITOR_STOPPED"
                     );
-                      write_log("MONITOR STOPPED");
+
+                    write_log(
+                        "MONITOR STOPPED"
+                    );
                 }
-            } 
+            }
 
             /* ================================= */
             /* QUIT                              */
@@ -1220,6 +1155,22 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                         "QUIT"
                     ) == 0)
             {
+                if (monitor_active)
+                {
+                    monitor_config.running = 0;
+
+                    pthread_join(
+                        monitor_thread,
+                        NULL
+                    );
+
+                    close(
+                        monitor_config.udp_socket
+                    );
+
+                    monitor_active = 0;
+                }
+
                 send_response(
                     client_fd,
                     "OK BYE"
@@ -1243,13 +1194,125 @@ else if (strncmp(buffer, "GET ", 4) == 0)
         }
 
 
-        /* Close Controller connection */
-        close(client_fd);
+    close(client_fd);
 
-        printf(
-            "Controller disconnected.\n"
+    printf("Controller disconnected.\n");
+    write_log("Controller disconnected");
+
+    return NULL;
+}
+
+int main()
+{
+    int server_fd;
+    int client_fd;
+
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+
+    socklen_t client_len;
+
+
+    /* 1. Create TCP socket */
+    server_fd = socket(
+        AF_INET,
+        SOCK_STREAM,
+        0
+    );
+
+    if (server_fd < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+
+    /* 2. Configure server address */
+    memset(
+        &server_addr,
+        0,
+        sizeof(server_addr)
+    );
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+
+    /* 3. Bind socket to port 9461 */
+    if (bind(
+            server_fd,
+            (struct sockaddr *)&server_addr,
+            sizeof(server_addr)
+        ) < 0)
+    {
+        perror("bind");
+
+        close(server_fd);
+
+        return 1;
+    }
+
+
+    /* 4. Start listening */
+    if (listen(server_fd, 5) < 0)
+    {
+        perror("listen");
+
+        close(server_fd);
+
+        return 1;
+    }
+
+
+    printf("RemoteOps Agent started.\n");
+    printf("Listening on TCP port %d...\n", PORT);
+
+
+    /* 5. Accept Controller connections */
+    while (1)
+    {
+        client_len = sizeof(client_addr);
+
+        client_fd = accept(
+            server_fd,
+            (struct sockaddr *)&client_addr,
+            &client_len
         );
-write_log("Controller disconnected");
+
+        if (client_fd < 0)
+        {
+            perror("accept");
+            continue;
+        }
+    pthread_t thread;
+
+struct ClientArgs *client_info =
+    malloc(sizeof(struct ClientArgs));
+
+if (client_info == NULL)
+{
+    perror("malloc");
+    close(client_fd);
+    continue;
+}
+
+client_info->client_fd = client_fd;
+client_info->client_addr = client_addr;
+
+if (pthread_create(&thread, NULL, client_handler, client_info) != 0)
+{
+    perror("pthread_create");
+    free(client_info);
+    close(client_fd);
+    continue;
+}
+
+pthread_detach(thread);
+
+
+       
+
     }
 
 
