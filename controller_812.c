@@ -11,7 +11,6 @@
 #define PORT 9461
 #define BUFFER_SIZE 4096
 #define AUTH_TOKEN "OPS-0812"
-#define AUTH_TOKEN "OPS-0812"
 #define MONITOR_UDP_PORT 9462
 
 
@@ -220,7 +219,87 @@ int main()
 
     printf("Agent: %s", buffer);
 
+    /* ================= PUT ================= */
+
+    const char *put_filename =
+        "put_test.txt";
+
+    FILE *put_file = fopen(
+        put_filename,
+        "rb"
+    );
+
+    if (put_file == NULL)
+    {
+        perror("fopen PUT file");
+        close(sock_fd);
+        return 1;
+    }
+
+    fseek(put_file, 0, SEEK_END);
+    long put_size = ftell(put_file);
+    fseek(put_file, 0, SEEK_SET);
+
+    char put_command[BUFFER_SIZE];
+
+    snprintf(
+        put_command,
+        sizeof(put_command),
+        "PUT %s %ld\n",
+        put_filename,
+        put_size
+    );
+
+    printf(
+        "Uploading %s (%ld bytes)...\n",
+        put_filename,
+        put_size
+    );
+
+    send_all(
+        sock_fd,
+        put_command,
+        strlen(put_command)
+    );
+
+    char put_buffer[BUFFER_SIZE];
+    size_t bytes_read;
+
+    while ((bytes_read = fread(
+                put_buffer,
+                1,
+                sizeof(put_buffer),
+                put_file)) > 0)
+    {
+        if (send_all(
+                sock_fd,
+                put_buffer,
+                bytes_read) < 0)
+        {
+            printf("PUT upload failed.\n");
+            fclose(put_file);
+            close(sock_fd);
+            return 1;
+        }
+    }
+
+    fclose(put_file);
+
+    if (receive_line(
+            sock_fd,
+            buffer,
+            sizeof(buffer)) < 0)
+    {
+        printf("PUT response failed.\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    printf("Agent: %s", buffer);
+
     /* ================= GET ================= */
+
+
 
     const char *filename =
         "upload.txt";
@@ -349,7 +428,112 @@ int main()
         return 1;
     }
 
-    /* Start monitoring */
+    /* ================= LISTPROC ================= */
+
+    const char *listproc =
+        "LISTPROC\n";
+
+    send_all(
+        sock_fd,
+        listproc,
+        strlen(listproc)
+    );
+
+    if (receive_line(
+            sock_fd,
+            buffer,
+            sizeof(buffer)) < 0)
+    {
+        printf("LISTPROC response failed.\\n");
+        close(udp_fd);
+        close(sock_fd);
+        return 1;
+    }
+
+    printf(
+        "Agent: %s",
+        buffer
+    );
+
+    /* ================= EXEC ================= */
+
+    const char *exec_commands[] = {
+        "DATE",
+        "UPTIME",
+        "DISKFREE",
+        "HOSTNAME",
+        "WHOAMI"
+    };
+
+    int exec_count =
+        sizeof(exec_commands) / sizeof(exec_commands[0]);
+
+    for (int i = 0; i < exec_count; i++)
+    {
+        char exec_request[256];
+
+        snprintf(
+            exec_request,
+            sizeof(exec_request),
+            "EXEC %s\n",
+            exec_commands[i]
+        );
+
+        send_all(
+            sock_fd,
+            exec_request,
+            strlen(exec_request)
+        );
+
+        if (receive_line(
+                sock_fd,
+                buffer,
+                sizeof(buffer)) < 0)
+        {
+            printf(
+                "EXEC %s response failed.\n",
+                exec_commands[i]
+            );
+
+            close(sock_fd);
+            return 1;
+        }
+
+        printf(
+            "Agent: %s",
+            buffer
+        );
+    }
+
+    /* ================= EXEC REJECTION TEST ================= */
+
+    const char *exec_reject =
+        "EXEC ls\n";
+
+    send_all(
+        sock_fd,
+        exec_reject,
+        strlen(exec_reject)
+    );
+
+    if (receive_line(
+            sock_fd,
+            buffer,
+            sizeof(buffer)) < 0)
+    {
+        printf("EXEC rejection response failed.\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    printf(
+        "Agent: %s",
+        buffer
+    );
+
+    /* ================= MONITOR START ================= */
+
+
 
     const char *monitor_start =
         "MONITOR START\n";
@@ -365,11 +549,9 @@ int main()
             buffer,
             sizeof(buffer)) < 0)
     {
-        printf("MONITOR START response failed.\n");
-
+        printf("MONITOR START response failed.\\n");
         close(udp_fd);
         close(sock_fd);
-
         return 1;
     }
 
@@ -378,10 +560,8 @@ int main()
         buffer
     );
 
-    /* Receive 3 UDP monitoring reports */
-
     printf(
-        "\nWaiting for UDP monitoring reports...\n"
+        "\\nWaiting for UDP monitoring reports...\\n"
     );
 
     receive_monitor_packets(
@@ -389,7 +569,7 @@ int main()
         3
     );
 
-    /* Stop monitoring */
+    /* ================= MONITOR STOP ================= */
 
     const char *monitor_stop =
         "MONITOR STOP\n";
@@ -405,11 +585,9 @@ int main()
             buffer,
             sizeof(buffer)) < 0)
     {
-        printf("MONITOR STOP response failed.\n");
-
+        printf("MONITOR STOP response failed.\\n");
         close(udp_fd);
         close(sock_fd);
-
         return 1;
     }
 
