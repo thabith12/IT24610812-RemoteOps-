@@ -195,7 +195,100 @@ void handle_listproc(int client_fd)
         0
     );
 }
+/* Handle EXEC command with fixed whitelist */
+void handle_exec(int client_fd, const char *command)
+{
+    char result[1024];
+    FILE *pipe;
 
+    /* DATE */
+    if (strcmp(command, "DATE") == 0)
+    {
+        pipe = popen("date", "r");
+    }
+
+    /* UPTIME */
+    else if (strcmp(command, "UPTIME") == 0)
+    {
+        pipe = popen("uptime", "r");
+    }
+
+    /* DISKFREE */
+    else if (strcmp(command, "DISKFREE") == 0)
+    {
+        pipe = popen("df -h /", "r");
+    }
+
+    /* HOSTNAME */
+    else if (strcmp(command, "HOSTNAME") == 0)
+    {
+        pipe = popen("hostname", "r");
+    }
+
+    /* WHOAMI */
+    else if (strcmp(command, "WHOAMI") == 0)
+    {
+        pipe = popen("whoami", "r");
+    }
+
+    /* Anything else is rejected */
+    else
+    {
+        send_response(
+            client_fd,
+            "ERR 002 COMMAND_NOT_ALLOWED"
+        );
+
+        return;
+    }
+
+    if (pipe == NULL)
+    {
+        send_response(
+            client_fd,
+            "ERR 500 EXEC_FAILED"
+        );
+
+        return;
+    }
+
+    memset(result, 0, sizeof(result));
+
+    if (fgets(
+            result,
+            sizeof(result),
+            pipe
+        ) != NULL)
+    {
+        /* Remove newline */
+        result[
+            strcspn(result, "\r\n")
+        ] = '\0';
+
+        char response[BUFFER_SIZE];
+
+        snprintf(
+            response,
+            sizeof(response),
+            "OK EXEC_RESULT %s",
+            result
+        );
+
+        send_response(
+            client_fd,
+            response
+        );
+    }
+    else
+    {
+        send_response(
+            client_fd,
+            "ERR 500 EXEC_FAILED"
+        );
+    }
+
+    pclose(pipe);
+}
 
 int main()
 {
@@ -417,7 +510,25 @@ int main()
                     );
                 }
             }
-
+            
+           /* EXEC */
+else if (strncmp(buffer, "EXEC ", 5) == 0)
+{
+    if (!authenticated)
+    {
+        send_response(
+            client_fd,
+            "ERR 002 NOT_AUTHENTICATED"
+        );
+    }
+    else
+    {
+        handle_exec(
+            client_fd,
+            buffer + 5
+        );
+    }
+} 
 
             /* ================================= */
             /* QUIT                              */
