@@ -10,7 +10,8 @@
 
 #define PORT 9461
 #define BUFFER_SIZE 4096
-
+#define STORAGE_PATH "./agentfiles/IT24610812/"
+#define MAX_FILE_SIZE 10485760
 #define AUTH_TOKEN "OPS-0812"
 #define SID "2180"
 
@@ -290,6 +291,209 @@ void handle_exec(int client_fd, const char *command)
     pclose(pipe);
 }
 
+void handle_put(int client_fd, const char *filename, long file_size)
+{
+    char filepath[512];
+    FILE *file;
+    char buffer[4096];
+    long total_received = 0;
+
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL)
+    {
+        send_response(
+            client_fd,
+            "ERR 400 INVALID_FILENAME"
+        );
+        return;
+    }
+    
+    /* Build personalized storage path */
+    snprintf(filepath, sizeof(filepath),
+             "agentfiles/IT24610812/%s", filename);
+
+    /* Open file for binary writing */
+    file = fopen(filepath, "wb");
+
+    if (file == NULL)
+    {
+        send_response(client_fd, "ERR 500 FILE_OPEN_FAILED");
+        return;
+    }
+
+    /* Receive exactly file_size bytes */
+    while (total_received < file_size)
+    {
+        long remaining = file_size - total_received;
+        int chunk_size = sizeof(buffer);
+
+        if (remaining < chunk_size)
+            chunk_size = (int)remaining;
+
+        int bytes_received = recv(
+            client_fd,
+            buffer,
+            chunk_size,
+            0
+        );
+
+        if (bytes_received <= 0)
+        {
+            fclose(file);
+            remove(filepath);
+            return;
+        }
+
+        fwrite(buffer, 1, bytes_received, file);
+
+        total_received += bytes_received;
+    }
+
+    fclose(file);
+
+    send_response(client_fd, "OK PUT");
+}
+
+void handle_get(int client_fd, const char *filename)
+{
+    char filepath[512];
+    FILE *file;
+    char buffer[4096];
+
+    /* Prevent path traversal */
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL)
+    {
+        send_response(
+            client_fd,
+            "ERR 400 INVALID_FILENAME"
+        );
+        return;
+    }
+
+    /* Build personalized storage path */
+    snprintf(
+        filepath,
+        sizeof(filepath),
+        "%s%s",
+        STORAGE_PATH,
+        filename
+    );
+
+    /* Open requested file */
+    file = fopen(filepath, "rb");
+
+    if (file == NULL)
+    {
+        send_response(
+            client_fd,
+            "ERR 005 FILE_NOT_FOUND"
+        );
+        return;
+    }
+
+    /* Find file size */
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+
+        send_response(
+            client_fd,
+            "ERR 500 FILE_READ_FAILED"
+        );
+
+        return;
+    }
+
+    long file_size = ftell(file);
+
+    if (file_size < 0)
+    {
+        fclose(file);
+
+        send_response(
+            client_fd,
+            "ERR 500 FILE_READ_FAILED"
+        );
+
+        return;
+    }
+
+    rewind(file);
+
+    /*
+     * Send response line first.
+     * The controller will then receive exactly
+     * file_size raw bytes.
+     */
+    char response[BUFFER_SIZE];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "OK FILE_SEND %ld",
+        file_size
+    );
+
+    send_response(
+        client_fd,
+        response
+    );
+
+    /* Send exact file bytes */
+    long total_sent = 0;
+
+    while (total_sent < file_size)
+    {
+        size_t bytes_to_read = sizeof(buffer);
+
+        if (file_size - total_sent < (long)bytes_to_read)
+        {
+            bytes_to_read =
+                (size_t)(file_size - total_sent);
+        }
+
+        size_t bytes_read =
+            fread(
+                buffer,
+                1,
+                bytes_to_read,
+                file
+            );
+
+        if (bytes_read == 0)
+        {
+            break;
+        }
+
+        size_t sent = 0;
+
+        while (sent < bytes_read)
+        {
+            ssize_t n = send(
+                client_fd,
+                buffer + sent,
+                bytes_read - sent,
+                0
+            );
+
+            if (n <= 0)
+            {
+                fclose(file);
+                return;
+            }
+
+            sent += (size_t)n;
+        }
+
+        total_sent += (long)bytes_read;
+    }
+
+    fclose(file);
+}
+
 int main()
 {
     int server_fd;
@@ -527,6 +731,79 @@ else if (strncmp(buffer, "EXEC ", 5) == 0)
             client_fd,
             buffer + 5
         );
+    }
+}
+
+else if (strncmp(buffer, "PUT ", 4) == 0)
+{
+    if (!authenticated)
+    {
+        send_response(
+            client_fd,
+            "ERR 002 NOT_AUTHENTICATED"
+        );
+    }
+    else
+    {
+        char filename[256];
+        long file_size;
+
+        if (sscanf(buffer + 4, "%255s %ld",
+                   filename, &file_size) != 2)
+        {
+            send_response(
+                client_fd,
+                "ERR 400 INVALID_PUT"
+            );
+        }
+        else if (file_size < 0)
+        {
+            send_response(
+                client_fd,
+                "ERR 400 INVALID_FILE_SIZE"
+            );
+        }
+        else
+        {
+            handle_put(
+                client_fd,
+                filename,
+                file_size
+            );
+        }
+    }
+}
+
+else if (strncmp(buffer, "GET ", 4) == 0)
+{
+    if (!authenticated)
+    {
+        send_response(
+            client_fd,
+            "ERR 002 NOT_AUTHENTICATED"
+        );
+    }
+    else
+    {
+        char filename[256];
+
+        if (sscanf(
+                buffer + 4,
+                "%255s",
+                filename) != 1)
+        {
+            send_response(
+                client_fd,
+                "ERR 400 INVALID_GET"
+            );
+        }
+        else
+        {
+            handle_get(
+                client_fd,
+                filename
+            );
+        }
     }
 } 
 
