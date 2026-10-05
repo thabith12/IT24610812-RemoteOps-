@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/select.h>
+#include <sys/time.h>
 
 #define SERVER_IP "127.0.0.1"
 #define PORT 9461
@@ -262,6 +263,9 @@ int main()
         strlen(put_command)
     );
 
+    struct timeval put_start, put_end;
+    gettimeofday(&put_start, NULL);
+
     char put_buffer[BUFFER_SIZE];
     size_t bytes_read;
 
@@ -283,6 +287,8 @@ int main()
         }
     }
 
+    gettimeofday(&put_end, NULL);
+
     fclose(put_file);
 
     if (receive_line(
@@ -296,6 +302,12 @@ int main()
     }
 
     printf("Agent: %s", buffer);
+
+    double put_elapsed = (put_end.tv_sec - put_start.tv_sec) + (put_end.tv_usec - put_start.tv_usec) / 1000000.0;
+    if (put_elapsed > 0.0)
+    {
+        printf("PUT throughput: %.2f KB/s\n", (put_size / 1024.0) / put_elapsed);
+    }
 
     /* ================= GET ================= */
 
@@ -315,6 +327,9 @@ int main()
 
     printf("Requesting file: %s\n",
            filename);
+
+    struct timeval get_start, get_end;
+    gettimeofday(&get_start, NULL);
 
     send_all(
         sock_fd,
@@ -380,12 +395,20 @@ int main()
         return 1;
     }
 
+    gettimeofday(&get_end, NULL);
+
     fclose(file);
 
     printf(
         "Downloaded %ld bytes successfully.\n",
         file_size
     );
+
+    double get_elapsed = (get_end.tv_sec - get_start.tv_sec) + (get_end.tv_usec - get_start.tv_usec) / 1000000.0;
+    if (get_elapsed > 0.0)
+    {
+        printf("GET throughput: %.2f KB/s\n", (file_size / 1024.0) / get_elapsed);
+    }
 
     /* ================= MONITOR ================= */
 
