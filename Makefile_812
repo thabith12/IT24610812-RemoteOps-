@@ -1,0 +1,13 @@
+CC = gcc
+CFLAGS = -Wall -Wextra -pthread
+
+all: agent_812 controller_812
+
+agent_812: agent_812.c
+	$(CC) $(CFLAGS) -o agent_812 agent_812.c
+
+controller_812: controller_812.c
+	$(CC) $(CFLAGS) -o controller_812 controller_812.c
+
+clean:
+	rm -f agent_812 controller_812 downloaded_upload.txt
