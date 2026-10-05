@@ -61,6 +61,42 @@ void send_response(int client_fd, const char *message)
     );
 }
 
+/* Receive one complete newline-terminated TCP command */
+int receive_command(int client_fd, char *command, size_t command_size)
+{
+    size_t pos = 0;
+
+    while (pos < command_size - 1)
+    {
+        char ch;
+        int bytes_received = recv(
+            client_fd,
+            &ch,
+            1,
+            0
+        );
+
+        if (bytes_received <= 0)
+        {
+            return -1;
+        }
+
+        if (ch == '\n')
+        {
+            command[pos] = '\0';
+            return 0;
+        }
+
+        if (ch != '\r')
+        {
+            command[pos++] = ch;
+        }
+    }
+
+    command[pos] = '\0';
+    return 0;
+}
+
 void write_log(const char *event)
 {
     FILE *file;
@@ -790,35 +826,12 @@ void *client_handler(void *arg)
         /* Handle multiple commands on same connection */
         while (1)
         {
-            memset(
-                buffer,
-                0,
-                sizeof(buffer)
-            );
-
-
-            int bytes_received = recv(
-                client_fd,
-                buffer,
-                sizeof(buffer) - 1,
-                0
-            );
-
-
-            /* Controller disconnected */
-            if (bytes_received <= 0)
+            /* Receive one complete TCP command */
+            if (receive_command(client_fd, buffer, sizeof(buffer)) < 0)
             {
+                /* Controller disconnected */
                 break;
             }
-
-
-            buffer[bytes_received] = '\0';
-
-
-            /* Remove CR/LF */
-            buffer[
-                strcspn(buffer, "\r\n")
-            ] = '\0';
 
 
             printf(
