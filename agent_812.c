@@ -19,7 +19,7 @@
 #define MAX_FILE_SIZE 10485760
 #define AUTH_TOKEN "OPS-0812"
 #define SID "2180"
-#define LOG_FILE "remoteops_812.log"
+#define LOG_FILE "remoteops_IT24610812.log"
 
 /* UDP Monitor configuration */
 #define MONITOR_UDP_PORT 9462
@@ -638,7 +638,9 @@ char log_message[256];
 snprintf(log_message, sizeof(log_message), "PUT completed: %s (%ld bytes)", filename, file_size);
 write_log(log_message);
 
-    send_response(client_fd, "OK FILE_RECEIVED");
+    char response[256];
+    snprintf(response, sizeof(response), "OK FILE_RECEIVED %s", filename);
+    send_response(client_fd, response);
 }
 
 void handle_get(int client_fd, const char *filename)
@@ -715,7 +717,8 @@ void handle_get(int client_fd, const char *filename)
     snprintf(
         response,
         sizeof(response),
-        "OK FILE_SEND %ld",
+        "OK FILE_SEND %s %ld",
+        filename,
         file_size
     );
 
@@ -1032,9 +1035,20 @@ else if (strncmp(buffer, "GET ", 4) == 0)
             /* MONITOR START                      */
             /* ================================= */
 
-            else if (strcmp(buffer, "MONITOR START") == 0)
+            else if (strncmp(buffer, "MONITOR START ", 14) == 0)
             {
-                if (!authenticated)
+                int udp_port = 0;
+
+                if (sscanf(buffer, "MONITOR START %d", &udp_port) != 1 ||
+                    udp_port < 1 ||
+                    udp_port > 65535)
+                {
+                    send_response(
+                        client_fd,
+                        "ERR 400 INVALID_UDP_PORT"
+                    );
+                }
+                else if (!authenticated)
                 {
                     send_response(
                         client_fd,
@@ -1075,7 +1089,7 @@ else if (strncmp(buffer, "GET ", 4) == 0)
                             client_addr.sin_addr;
 
                         monitor_config.controller_addr.sin_port =
-                            htons(MONITOR_UDP_PORT);
+                            htons(udp_port);
 
                         monitor_config.running = 1;
 

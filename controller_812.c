@@ -351,12 +351,14 @@ int main()
     printf("Agent: %s", buffer);
 
     /* Check FILE_SEND */
+    char response_filename[256];
     long file_size;
 
     if (sscanf(
             buffer,
-            "OK FILE_SEND %ld",
-            &file_size) != 1)
+            "OK FILE_SEND %255s %ld",
+            response_filename,
+            &file_size) != 2)
     {
         printf("GET failed.\n");
         close(sock_fd);
@@ -559,7 +561,7 @@ int main()
 
 
     const char *monitor_start =
-        "MONITOR START\n";
+        "MONITOR START 9462\n";
 
     send_all(
         sock_fd,

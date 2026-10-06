@@ -33,22 +33,28 @@ PUT and GET functionality was implemented for uploading and downloading files. U
 Filename validation and a maximum file size of 10 MB were also added.
 
 ### Step 6 – UDP Monitoring
-UDP monitoring was implemented using `MONITOR START` and `MONITOR STOP`. Monitoring reports include CPU usage, memory usage, uptime, and SID.
+UDP monitoring was implemented using `MONITOR START` and `MONITOR STOP`.
+ Monitoring reports include CPU usage, memory usage, uptime, and SID.
 
 ### Step 7 – Logging
-Timestamped logging was added to record Controller connections, authentication, commands, file transfers, monitoring operations, and disconnections.
+Timestamped logging was added to record Controller connections,
+ authentication, commands, file transfers, monitoring operations, and disconnections.
 
 ### Step 8 – Concurrency
-A thread-per-Controller model using POSIX threads was implemented. This allows multiple Controllers to connect to the Agent independently.
-
+A thread-per-Controller model using POSIX threads was implemented.
+ This allows multiple Controllers to connect to the Agent independently.
 The implementation was tested using five simultaneous Controller connections.
 
 ### Step 9 – TCP Stream Handling
-TCP command reception was improved by implementing newline-based command framing. This avoids assuming that one `recv()` call always contains exactly one complete command.
+TCP command reception was improved by implementing newline-based command framing. 
+This avoids assuming that one `recv()` call always contains exactly one complete command.
 
 ### Step 10 – Optional Extension
-PUT and GET throughput measurement was added using timing calculations. File integrity was also verified using `cmp` and SHA-256 hashing.
+PUT and GET throughput measurement was added using timing calculations.
+ File integrity was also verified using `cmp` and SHA-256 hashing.
 
 ## Final Design Decisions
 
-TCP was selected for reliable command and file transfer, while UDP was selected for periodic monitoring. POSIX threads were selected for concurrent Controller handling. A command whitelist was used to reduce security risks, and personalised storage was used to satisfy the assignment requirements.
+TCP was selected for reliable command and file transfer, while UDP was selected for periodic monitoring.
+ POSIX threads were selected for concurrent Controller handling.
+ A command whitelist was used to reduce security risks, and personalised storage was used to satisfy the assignment requirements.
