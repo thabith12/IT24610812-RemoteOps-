@@ -314,7 +314,7 @@ int main()
 
 
     const char *filename =
-        "upload.txt";
+        "put_test.txt";
 
     char get_command[BUFFER_SIZE];
 
